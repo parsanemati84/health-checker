@@ -59,6 +59,8 @@ export default function ApiHealthChecker() {
   const [isError, setIsError] = useState(false)
   const [statusCode, setStatusCode] = useState<number | null>(null)
   const [requestDetails, setRequestDetails] = useState<RequestDetails | null>(null)
+  const [useProxy, setUseProxy] = useState(false)
+  const [activeTab, setActiveTab] = useState("url")
 
   const parseBrowserInfo = (ua: string) => {
     let name = "Unknown"
@@ -201,110 +203,189 @@ export default function ApiHealthChecker() {
 
     const timestamp = new Date().toISOString()
     const startTime = performance.now()
-    const xhr = new XMLHttpRequest()
-    xhr.open(method, targetUrl, true)
 
-    Object.entries(headers).forEach(([key, value]) => {
-      xhr.setRequestHeader(key, value)
-    })
-
-    xhr.onload = () => {
-      const endTime = performance.now()
-      let formattedData = xhr.responseText
+    if (useProxy) {
+      // Use server-side proxy to bypass CORS
       try {
-        const json = JSON.parse(xhr.responseText)
-        formattedData = JSON.stringify(json, null, 2)
-      } catch {
-        // Not JSON, keep as text
+        const response = await fetch("/api/proxy", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url: targetUrl,
+            method,
+            headers,
+            body,
+          }),
+        })
+
+        const result = await response.json()
+        const endTime = performance.now()
+
+        if (result.error) {
+          setData(`Proxy Error: ${result.error}`)
+          setIsError(true)
+          setStatusCode(result.status || 500)
+        } else {
+          let formattedData = result.body
+          try {
+            const json = JSON.parse(result.body)
+            formattedData = JSON.stringify(json, null, 2)
+          } catch {
+            // Not JSON, keep as text
+          }
+
+          setStatusCode(result.status)
+          setData(formattedData)
+          setIsError(result.status < 200 || result.status >= 300)
+
+          const responseSize = new Blob([result.body]).size
+
+          setRequestDetails({
+            method,
+            url: targetUrl,
+            statusCode: result.status,
+            statusText: result.statusText,
+            timestamp,
+            userAgent: navigator.userAgent,
+            referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
+            platform: navigator.platform,
+            language: navigator.language,
+            secChUaPlatform: (navigator as any).userAgentData?.platform || null,
+            responseHeaders: result.headers || {},
+            requestHeaders: headers,
+            ip: null,
+            server: result.headers?.server || null,
+            contentType: result.headers?.["content-type"] || null,
+            responseTime: result.responseTime || endTime - startTime,
+            responseSize,
+            requestBody: body,
+            queryParams: extractQueryParams(targetUrl),
+            timingDetails: {},
+            browserInfo: parseBrowserInfo(navigator.userAgent),
+            viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            protocol: "HTTP/1.1 (Proxied)",
+          })
+        }
+
+        setLoading(false)
+      } catch (error: any) {
+        const endTime = performance.now()
+        setData(`Proxy Error: ${error.message}`)
+        setIsError(true)
+        setStatusCode(500)
+        setLoading(false)
       }
-      setStatusCode(xhr.status)
-      setData(formattedData)
-      setIsError(xhr.status < 200 || xhr.status >= 300)
+    } else {
+      // Direct browser request (may fail due to CORS)
+      const xhr = new XMLHttpRequest()
+      xhr.open(method, targetUrl, true)
 
-      const responseHeaders: Record<string, string> = {}
-      const headerString = xhr.getAllResponseHeaders()
-      headerString.split("\r\n").forEach((line) => {
-        const [key, value] = line.split(": ")
-        if (key && value) responseHeaders[key] = value
+      Object.entries(headers).forEach(([key, value]) => {
+        xhr.setRequestHeader(key, value)
       })
 
-      const responseSize = new Blob([xhr.responseText]).size
+      xhr.onload = () => {
+        const endTime = performance.now()
+        let formattedData = xhr.responseText
+        try {
+          const json = JSON.parse(xhr.responseText)
+          formattedData = JSON.stringify(json, null, 2)
+        } catch {
+          // Not JSON, keep as text
+        }
+        setStatusCode(xhr.status)
+        setData(formattedData)
+        setIsError(xhr.status < 200 || xhr.status >= 300)
 
-      const protocol = responseHeaders["x-http-protocol"] || "HTTP/1.1"
+        const responseHeaders: Record<string, string> = {}
+        const headerString = xhr.getAllResponseHeaders()
+        headerString.split("\r\n").forEach((line) => {
+          const [key, value] = line.split(": ")
+          if (key && value) responseHeaders[key] = value
+        })
 
-      setRequestDetails({
-        method,
-        url: targetUrl,
-        statusCode: xhr.status,
-        statusText: xhr.statusText,
-        timestamp,
-        userAgent: navigator.userAgent,
-        referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
-        platform: navigator.platform,
-        language: navigator.language,
-        secChUaPlatform: (navigator as any).userAgentData?.platform || null,
-        responseHeaders,
-        requestHeaders: headers,
-        ip: null,
-        server: xhr.getResponseHeader("server"),
-        contentType: xhr.getResponseHeader("content-type"),
-        responseTime: endTime - startTime,
-        responseSize,
-        requestBody: body,
-        queryParams: extractQueryParams(targetUrl),
-        timingDetails: getTimingDetails(targetUrl),
-        browserInfo: parseBrowserInfo(navigator.userAgent),
-        viewportSize: `${window.innerWidth}x${window.innerHeight}`,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        protocol,
-      })
+        const responseSize = new Blob([xhr.responseText]).size
 
-      setLoading(false)
-    }
+        const protocol = responseHeaders["x-http-protocol"] || "HTTP/1.1"
 
-    xhr.onerror = () => {
-      const endTime = performance.now()
-      let errorMsg = "Network error"
-      if (xhr.status === 0) {
-        errorMsg = "CORS error: Unable to access the resource. The server may not have proper CORS headers configured."
-      } else {
-        errorMsg = `Error: ${xhr.status} ${xhr.statusText}`
+        setRequestDetails({
+          method,
+          url: targetUrl,
+          statusCode: xhr.status,
+          statusText: xhr.statusText,
+          timestamp,
+          userAgent: navigator.userAgent,
+          referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
+          platform: navigator.platform,
+          language: navigator.language,
+          secChUaPlatform: (navigator as any).userAgentData?.platform || null,
+          responseHeaders,
+          requestHeaders: headers,
+          ip: null,
+          server: xhr.getResponseHeader("server"),
+          contentType: xhr.getResponseHeader("content-type"),
+          responseTime: endTime - startTime,
+          responseSize,
+          requestBody: body,
+          queryParams: extractQueryParams(targetUrl),
+          timingDetails: getTimingDetails(targetUrl),
+          browserInfo: parseBrowserInfo(navigator.userAgent),
+          viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          protocol,
+        })
+
+        setLoading(false)
       }
-      setData(errorMsg)
-      setIsError(true)
-      setStatusCode(xhr.status || 0)
 
-      setRequestDetails({
-        method,
-        url: targetUrl,
-        statusCode: xhr.status || 0,
-        statusText: xhr.statusText || "Network Error",
-        timestamp,
-        userAgent: navigator.userAgent,
-        referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
-        platform: navigator.platform,
-        language: navigator.language,
-        secChUaPlatform: (navigator as any).userAgentData?.platform || null,
-        responseHeaders: {},
-        requestHeaders: headers,
-        ip: null,
-        server: null,
-        contentType: null,
-        responseTime: endTime - startTime,
-        responseSize: null,
-        requestBody: body,
-        queryParams: extractQueryParams(targetUrl),
-        timingDetails: {},
-        browserInfo: parseBrowserInfo(navigator.userAgent),
-        viewportSize: `${window.innerWidth}x${window.innerHeight}`,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        protocol: "Unknown",
-      })
+      xhr.onerror = () => {
+        const endTime = performance.now()
+        let errorMsg = "Network error"
+        if (xhr.status === 0) {
+          errorMsg =
+            "CORS error: Unable to access the resource. The server may not have proper CORS headers configured. Try enabling 'Use Proxy' to bypass CORS."
+        } else {
+          errorMsg = `Error: ${xhr.status} ${xhr.statusText}`
+        }
+        setData(errorMsg)
+        setIsError(true)
+        setStatusCode(xhr.status || 0)
 
-      setLoading(false)
+        setRequestDetails({
+          method,
+          url: targetUrl,
+          statusCode: xhr.status || 0,
+          statusText: xhr.statusText || "Network Error",
+          timestamp,
+          userAgent: navigator.userAgent,
+          referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
+          platform: navigator.platform,
+          language: navigator.language,
+          secChUaPlatform: (navigator as any).userAgentData?.platform || null,
+          responseHeaders: {},
+          requestHeaders: headers,
+          ip: null,
+          server: null,
+          contentType: null,
+          responseTime: endTime - startTime,
+          responseSize: null,
+          requestBody: body,
+          queryParams: extractQueryParams(targetUrl),
+          timingDetails: {},
+          browserInfo: parseBrowserInfo(navigator.userAgent),
+          viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          protocol: "Unknown",
+        })
+
+        setLoading(false)
+      }
+
+      xhr.send(body)
     }
-
-    xhr.send(body)
   }
 
   const handleCurlExecute = () => {
@@ -353,11 +434,24 @@ export default function ApiHealthChecker() {
             <CardDescription>Test APIs using URL or paste cURL commands</CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="url" className="w-full">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="url">URL Test</TabsTrigger>
                 <TabsTrigger value="curl">cURL Test</TabsTrigger>
               </TabsList>
+
+              <div className="mt-4 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="useProxy"
+                  checked={useProxy}
+                  onChange={(e) => setUseProxy(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-2 focus:ring-blue-500"
+                />
+                <label htmlFor="useProxy" className="text-sm text-slate-700">
+                  Use Server Proxy (bypasses CORS restrictions)
+                </label>
+              </div>
 
               <TabsContent value="url" className="space-y-4">
                 <div className="flex gap-2">
