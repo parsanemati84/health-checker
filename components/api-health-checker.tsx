@@ -26,7 +26,7 @@ interface RequestDetails {
 }
 
 export default function ApiHealthChecker() {
-  const [url, setUrl] = useState("https://dev-api.pencilly.us/api/v1/health")
+  const [url, setUrl] = useState("https://blog.nemati.ai/api/v1/health/")
   const [curlCommand, setCurlCommand] = useState("")
   const [data, setData] = useState<string>("")
   const [loading, setLoading] = useState(false)
