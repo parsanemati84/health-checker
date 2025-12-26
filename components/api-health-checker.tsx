@@ -11,18 +11,44 @@ import { CheckCircle2, XCircle, Loader2, Activity } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
 
 interface RequestDetails {
+  method: string
+  url: string
+  statusCode: number
+  statusText: string
+  timestamp: string
   userAgent: string
   referrerPolicy: string
   platform: string
   language: string
   secChUaPlatform: string | null
   responseHeaders: Record<string, string>
+  requestHeaders: Record<string, string>
   ip: string | null
   server: string | null
   contentType: string | null
   responseTime: number
+  responseSize: number | null
+  requestBody: string | null
+  queryParams: Record<string, string>
+  timingDetails: {
+    dnsLookup?: number
+    tcpConnect?: number
+    tlsHandshake?: number
+    ttfb?: number
+    download?: number
+  }
+  browserInfo: {
+    name: string
+    version: string
+    os: string
+    deviceType: string
+  }
+  viewportSize: string
+  timezone: string
+  protocol: string
 }
 
 export default function ApiHealthChecker() {
@@ -33,6 +59,73 @@ export default function ApiHealthChecker() {
   const [isError, setIsError] = useState(false)
   const [statusCode, setStatusCode] = useState<number | null>(null)
   const [requestDetails, setRequestDetails] = useState<RequestDetails | null>(null)
+
+  const parseBrowserInfo = (ua: string) => {
+    let name = "Unknown"
+    let version = "Unknown"
+    let os = "Unknown"
+    let deviceType = "Desktop"
+
+    if (ua.includes("Chrome") && !ua.includes("Edg")) {
+      name = "Chrome"
+      const match = ua.match(/Chrome\/(\d+)/)
+      if (match) version = match[1]
+    } else if (ua.includes("Firefox")) {
+      name = "Firefox"
+      const match = ua.match(/Firefox\/(\d+)/)
+      if (match) version = match[1]
+    } else if (ua.includes("Safari") && !ua.includes("Chrome")) {
+      name = "Safari"
+      const match = ua.match(/Version\/(\d+)/)
+      if (match) version = match[1]
+    } else if (ua.includes("Edg")) {
+      name = "Edge"
+      const match = ua.match(/Edg\/(\d+)/)
+      if (match) version = match[1]
+    }
+
+    if (ua.includes("Windows")) os = "Windows"
+    else if (ua.includes("Mac")) os = "macOS"
+    else if (ua.includes("Linux")) os = "Linux"
+    else if (ua.includes("Android")) {
+      os = "Android"
+      deviceType = "Mobile"
+    } else if (ua.includes("iOS") || ua.includes("iPhone") || ua.includes("iPad")) {
+      os = "iOS"
+      deviceType = ua.includes("iPad") ? "Tablet" : "Mobile"
+    }
+
+    return { name, version, os, deviceType }
+  }
+
+  const extractQueryParams = (urlString: string): Record<string, string> => {
+    try {
+      const urlObj = new URL(urlString)
+      const params: Record<string, string> = {}
+      urlObj.searchParams.forEach((value, key) => {
+        params[key] = value
+      })
+      return params
+    } catch {
+      return {}
+    }
+  }
+
+  const getTimingDetails = (targetUrl: string) => {
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[]
+    const entry = entries.find((e) => e.name === targetUrl)
+
+    if (entry) {
+      return {
+        dnsLookup: entry.domainLookupEnd - entry.domainLookupStart,
+        tcpConnect: entry.connectEnd - entry.connectStart,
+        tlsHandshake: entry.secureConnectionStart > 0 ? entry.connectEnd - entry.secureConnectionStart : 0,
+        ttfb: entry.responseStart - entry.requestStart,
+        download: entry.responseEnd - entry.responseStart,
+      }
+    }
+    return {}
+  }
 
   const parseCurlCommand = (
     curl: string,
@@ -84,6 +177,7 @@ export default function ApiHealthChecker() {
     setStatusCode(null)
     setRequestDetails(null)
 
+    const timestamp = new Date().toISOString()
     const startTime = performance.now()
     const xhr = new XMLHttpRequest()
     xhr.open(method, targetUrl, true)
@@ -112,17 +206,35 @@ export default function ApiHealthChecker() {
         if (key && value) responseHeaders[key] = value
       })
 
+      const responseSize = new Blob([xhr.responseText]).size
+
+      const protocol = responseHeaders["x-http-protocol"] || "HTTP/1.1"
+
       setRequestDetails({
+        method,
+        url: targetUrl,
+        statusCode: xhr.status,
+        statusText: xhr.statusText,
+        timestamp,
         userAgent: navigator.userAgent,
         referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
         platform: navigator.platform,
         language: navigator.language,
         secChUaPlatform: (navigator as any).userAgentData?.platform || null,
         responseHeaders,
-        ip: null, // Can't get from browser
+        requestHeaders: headers,
+        ip: null,
         server: xhr.getResponseHeader("server"),
         contentType: xhr.getResponseHeader("content-type"),
         responseTime: endTime - startTime,
+        responseSize,
+        requestBody: body,
+        queryParams: extractQueryParams(targetUrl),
+        timingDetails: getTimingDetails(targetUrl),
+        browserInfo: parseBrowserInfo(navigator.userAgent),
+        viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        protocol,
       })
 
       setLoading(false)
@@ -141,16 +253,30 @@ export default function ApiHealthChecker() {
       setStatusCode(xhr.status || 0)
 
       setRequestDetails({
+        method,
+        url: targetUrl,
+        statusCode: xhr.status || 0,
+        statusText: xhr.statusText || "Network Error",
+        timestamp,
         userAgent: navigator.userAgent,
         referrerPolicy: document.referrerPolicy || "no-referrer-when-downgrade",
         platform: navigator.platform,
         language: navigator.language,
         secChUaPlatform: (navigator as any).userAgentData?.platform || null,
         responseHeaders: {},
+        requestHeaders: headers,
         ip: null,
         server: null,
         contentType: null,
         responseTime: endTime - startTime,
+        responseSize: null,
+        requestBody: body,
+        queryParams: extractQueryParams(targetUrl),
+        timingDetails: {},
+        browserInfo: parseBrowserInfo(navigator.userAgent),
+        viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        protocol: "Unknown",
       })
 
       setLoading(false)
@@ -180,6 +306,12 @@ export default function ApiHealthChecker() {
     if (e.key === "Enter" && !loading) {
       handleFetch()
     }
+  }
+
+  const getStatusBadgeVariant = (status: number) => {
+    if (status >= 200 && status < 300) return "default"
+    if (status >= 300 && status < 400) return "secondary"
+    return "destructive"
   }
 
   return (
@@ -286,7 +418,7 @@ export default function ApiHealthChecker() {
           <Card>
             <CardHeader>
               <CardTitle>Request Details</CardTitle>
-              <CardDescription>Information about the request and response</CardDescription>
+              <CardDescription>Comprehensive debugging information</CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
@@ -298,8 +430,185 @@ export default function ApiHealthChecker() {
                 </TableHeader>
                 <TableBody>
                   <TableRow>
-                    <TableCell className="font-medium">User Agent</TableCell>
-                    <TableCell className="font-mono text-sm break-all">{requestDetails.userAgent}</TableCell>
+                    <TableCell className="font-medium">Request Method</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="font-mono">
+                        {requestDetails.method}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Request URL</TableCell>
+                    <TableCell className="font-mono text-sm break-all">{requestDetails.url}</TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Status Code</TableCell>
+                    <TableCell>
+                      <Badge variant={getStatusBadgeVariant(requestDetails.statusCode)} className="font-mono">
+                        {requestDetails.statusCode} {requestDetails.statusText}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Timestamp</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {new Date(requestDetails.timestamp).toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+
+                  {Object.keys(requestDetails.queryParams).length > 0 && (
+                    <TableRow>
+                      <TableCell className="font-medium align-top">Query Parameters</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        <div className="space-y-1">
+                          {Object.entries(requestDetails.queryParams).map(([key, value]) => (
+                            <div key={key} className="break-all">
+                              <span className="text-purple-600 dark:text-purple-400">{key}:</span> {value}
+                            </div>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+
+                  {requestDetails.requestBody && (
+                    <TableRow>
+                      <TableCell className="font-medium align-top">Request Body</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        <pre className="max-h-32 overflow-auto bg-slate-100 dark:bg-slate-800 p-2 rounded text-xs">
+                          {requestDetails.requestBody.length > 200
+                            ? requestDetails.requestBody.substring(0, 200) + "..."
+                            : requestDetails.requestBody}
+                        </pre>
+                      </TableCell>
+                    </TableRow>
+                  )}
+
+                  {Object.keys(requestDetails.requestHeaders).length > 0 && (
+                    <TableRow>
+                      <TableCell className="font-medium align-top">Request Headers</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        <div className="space-y-1">
+                          {Object.entries(requestDetails.requestHeaders).map(([key, value]) => (
+                            <div key={key} className="break-all">
+                              <span className="text-orange-600 dark:text-orange-400">{key}:</span> {value}
+                            </div>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+
+                  <TableRow>
+                    <TableCell className="font-medium">Response Time (Total)</TableCell>
+                    <TableCell className="font-mono text-sm font-semibold text-blue-600 dark:text-blue-400">
+                      {requestDetails.responseTime.toFixed(2)} ms
+                    </TableCell>
+                  </TableRow>
+                  {Object.keys(requestDetails.timingDetails).length > 0 && (
+                    <>
+                      {requestDetails.timingDetails.dnsLookup !== undefined &&
+                        requestDetails.timingDetails.dnsLookup > 0 && (
+                          <TableRow>
+                            <TableCell className="font-medium pl-8">↳ DNS Lookup</TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {requestDetails.timingDetails.dnsLookup.toFixed(2)} ms
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      {requestDetails.timingDetails.tcpConnect !== undefined &&
+                        requestDetails.timingDetails.tcpConnect > 0 && (
+                          <TableRow>
+                            <TableCell className="font-medium pl-8">↳ TCP Connect</TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {requestDetails.timingDetails.tcpConnect.toFixed(2)} ms
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      {requestDetails.timingDetails.tlsHandshake !== undefined &&
+                        requestDetails.timingDetails.tlsHandshake > 0 && (
+                          <TableRow>
+                            <TableCell className="font-medium pl-8">↳ TLS Handshake</TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {requestDetails.timingDetails.tlsHandshake.toFixed(2)} ms
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      {requestDetails.timingDetails.ttfb !== undefined && requestDetails.timingDetails.ttfb > 0 && (
+                        <TableRow>
+                          <TableCell className="font-medium pl-8">↳ TTFB (Time to First Byte)</TableCell>
+                          <TableCell className="font-mono text-sm">
+                            {requestDetails.timingDetails.ttfb.toFixed(2)} ms
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {requestDetails.timingDetails.download !== undefined &&
+                        requestDetails.timingDetails.download > 0 && (
+                          <TableRow>
+                            <TableCell className="font-medium pl-8">↳ Download Time</TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {requestDetails.timingDetails.download.toFixed(2)} ms
+                            </TableCell>
+                          </TableRow>
+                        )}
+                    </>
+                  )}
+
+                  {requestDetails.responseSize !== null && (
+                    <TableRow>
+                      <TableCell className="font-medium">Response Size</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {requestDetails.responseSize < 1024
+                          ? `${requestDetails.responseSize} B`
+                          : `${(requestDetails.responseSize / 1024).toFixed(2)} KB`}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {requestDetails.contentType && (
+                    <TableRow>
+                      <TableCell className="font-medium">Content-Type</TableCell>
+                      <TableCell className="font-mono text-sm">{requestDetails.contentType}</TableCell>
+                    </TableRow>
+                  )}
+                  <TableRow>
+                    <TableCell className="font-medium">Protocol</TableCell>
+                    <TableCell className="font-mono text-sm">{requestDetails.protocol}</TableCell>
+                  </TableRow>
+                  {requestDetails.server && (
+                    <TableRow>
+                      <TableCell className="font-medium">Server</TableCell>
+                      <TableCell className="font-mono text-sm">{requestDetails.server}</TableCell>
+                    </TableRow>
+                  )}
+
+                  {Object.keys(requestDetails.responseHeaders).length > 0 && (
+                    <TableRow>
+                      <TableCell className="font-medium align-top">Response Headers</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        <div className="space-y-1 max-h-48 overflow-auto">
+                          {Object.entries(requestDetails.responseHeaders).map(([key, value]) => (
+                            <div key={key} className="break-all">
+                              <span className="text-green-600 dark:text-green-400">{key}:</span> {value}
+                            </div>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+
+                  <TableRow>
+                    <TableCell className="font-medium">Browser</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {requestDetails.browserInfo.name} {requestDetails.browserInfo.version}
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Operating System</TableCell>
+                    <TableCell className="font-mono text-sm">{requestDetails.browserInfo.os}</TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Device Type</TableCell>
+                    <TableCell className="font-mono text-sm">{requestDetails.browserInfo.deviceType}</TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell className="font-medium">Platform</TableCell>
@@ -312,46 +621,33 @@ export default function ApiHealthChecker() {
                     </TableRow>
                   )}
                   <TableRow>
+                    <TableCell className="font-medium">Viewport Size</TableCell>
+                    <TableCell className="font-mono text-sm">{requestDetails.viewportSize}</TableCell>
+                  </TableRow>
+                  <TableRow>
                     <TableCell className="font-medium">Language</TableCell>
                     <TableCell className="font-mono text-sm">{requestDetails.language}</TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Timezone</TableCell>
+                    <TableCell className="font-mono text-sm">{requestDetails.timezone}</TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">User Agent (Raw)</TableCell>
+                    <TableCell className="font-mono text-xs break-all text-muted-foreground">
+                      {requestDetails.userAgent}
+                    </TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell className="font-medium">Referrer Policy</TableCell>
                     <TableCell className="font-mono text-sm">{requestDetails.referrerPolicy}</TableCell>
                   </TableRow>
-                  <TableRow>
-                    <TableCell className="font-medium">Response Time</TableCell>
-                    <TableCell className="font-mono text-sm">{requestDetails.responseTime.toFixed(2)} ms</TableCell>
-                  </TableRow>
-                  {requestDetails.server && (
-                    <TableRow>
-                      <TableCell className="font-medium">Server</TableCell>
-                      <TableCell className="font-mono text-sm">{requestDetails.server}</TableCell>
-                    </TableRow>
-                  )}
-                  {requestDetails.contentType && (
-                    <TableRow>
-                      <TableCell className="font-medium">Content-Type</TableCell>
-                      <TableCell className="font-mono text-sm">{requestDetails.contentType}</TableCell>
-                    </TableRow>
-                  )}
-                  {Object.keys(requestDetails.responseHeaders).length > 0 && (
-                    <TableRow>
-                      <TableCell className="font-medium align-top">Response Headers</TableCell>
-                      <TableCell className="font-mono text-sm">
-                        <div className="space-y-1">
-                          {Object.entries(requestDetails.responseHeaders).map(([key, value]) => (
-                            <div key={key} className="break-all">
-                              <span className="text-blue-600 dark:text-blue-400">{key}:</span> {value}
-                            </div>
-                          ))}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
+
                   <TableRow>
                     <TableCell className="font-medium">Client IP</TableCell>
-                    <TableCell className="text-muted-foreground text-sm italic">Not available from browser</TableCell>
+                    <TableCell className="text-muted-foreground text-sm italic">
+                      Not available from browser (server-side only)
+                    </TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
