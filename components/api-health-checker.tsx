@@ -132,8 +132,7 @@ export default function ApiHealthChecker() {
   ): { url: string; method: string; headers: Record<string, string>; body: string | null } => {
     const result = { url: "", method: "GET", headers: {} as Record<string, string>, body: null as string | null }
 
-    // Extract URL
-    const urlMatch = curl.match(/['"]?(https?:\/\/[^\s'"]+)['"]?/)
+    const urlMatch = curl.match(/['"]?(https?:\/\/[^\s'"\\]+)['"]?/)
     if (urlMatch) result.url = urlMatch[1]
 
     // Extract method
@@ -149,11 +148,34 @@ export default function ApiHealthChecker() {
       }
     }
 
-    // Extract body
-    const bodyMatch = curl.match(/-d\s+['"](.+?)['"](?:\s|$)/s) || curl.match(/--data\s+['"](.+?)['"](?:\s|$)/s)
+    // Remove line continuation backslashes and newlines first
+    const cleanedCurl = curl.replace(/\\\n/g, " ").replace(/\n/g, " ")
+
+    // Try to match -d or --data with either single or double quotes
+    const bodyMatch =
+      cleanedCurl.match(/-d\s+'([^']*)'/s) ||
+      cleanedCurl.match(/-d\s+"([^"]*)"/s) ||
+      cleanedCurl.match(/--data\s+'([^']*)'/s) ||
+      cleanedCurl.match(/--data\s+"([^"]*)"/s)
+
     if (bodyMatch) {
-      result.body = bodyMatch[1].replace(/\.\.\./g, "").replace(/\n/g, "")
+      // Clean up the body: remove extra spaces but preserve JSON structure
+      let bodyContent = bodyMatch[1].trim()
+
+      // Try to parse and re-stringify to ensure valid JSON
+      try {
+        // Remove the ... placeholder if present
+        bodyContent = bodyContent.replace(/\.\.\./g, "")
+        const parsed = JSON.parse(bodyContent)
+        result.body = JSON.stringify(parsed)
+      } catch (e) {
+        // If not valid JSON, use as-is
+        result.body = bodyContent
+      }
     }
+
+    console.log("[v0] Parsed cURL:", result)
+    console.log("[v0] Request body:", result.body)
 
     return result
   }
